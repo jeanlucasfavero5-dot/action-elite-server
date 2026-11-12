@@ -1,0 +1,22 @@
+# Render blueprint: New + > Blueprint, pick this repository. The values marked sync: false are asked for in the dashboard.
+services:
+  - type: web
+    name: action-elite-server
+    runtime: node
+    plan: starter            # the free plan sleeps after 15 minutes without traffic, which drops every player
+    buildCommand: npm install --omit=dev
+    startCommand: node server/index.ts
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PB_NO_TCP         # Render exposes one HTTP port: the game reaches Auth / Game over WebSocket (/tcp)
+        value: "1"
+      - key: PB_DB_SSL
+        value: "1"
+      - key: PB_DB_URL         # Supabase > Connect > Session pooler (port 5432), with the database password
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY   # Supabase > Project Settings > API keys (secret). Charges diamonds. Never in the game page.
+        sync: false
+      - key: PB_WEB_ORIGINS    # the site that serves action-elite.html, e.g. https://meusite.com (comma list)
+        sync: false

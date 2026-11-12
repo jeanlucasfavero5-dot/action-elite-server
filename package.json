@@ -1,0 +1,21 @@
+{
+  "name": "action-elite-server",
+  "private": true,
+  "version": "0.0.5",
+  "license": "MIT",
+  "type": "module",
+  "description": "Action Elite Server: Auth, Game and web front in one process (Node + TypeScript, Postgres / Supabase)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node server/index.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "pg": "^8.13.0",
+    "ws": "^8.22.0",
+    "zod": "^3.25.76",
+    "three": "^0.169.0"
+  }
+}
