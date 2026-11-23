@@ -11,6 +11,7 @@ export interface MenuActions {
   playAgain(): void;
   settingsChanged(s: Settings): void;
   nameChanged(name: string): void;
+  openOnline(): void;
   click(): void;
 }
 
@@ -109,6 +110,7 @@ export class Menus {
   private onAction(a: string, el: HTMLElement): void {
     const act = this.act;
     if (a === "modes") { this.renderSetup(); this.show("setup"); }
+    else if (a === "online") { this.show("none"); act.openOnline(); }
     else if (a === "train") act.startTraining();
     else if (a === "profile") { this.renderProfile(); this.show("profile"); }
     else if (a === "start") { saveRoom(this.room); act.startMatch({ ...this.room, playerName: this.profile.name }); }
@@ -142,7 +144,7 @@ export class Menus {
       <div class="ae-card">
         <div>
           <div class="ae-logo">Action<b>Elite</b></div>
-          <div class="ae-sub">Parte 2 · Modos offline</div>
+          <div class="ae-sub">Parte 3 · Online</div>
           <div class="ae-profilebox"><b>${esc(p.name)}</b> · ${rankName(li.level)} · nível ${li.level}
             <div class="xp"><i style="width:${Math.round((li.into / li.next) * 100)}%"></i></div></div>
           <div class="ae-btns">
@@ -150,7 +152,7 @@ export class Menus {
             <button class="ae-btn" data-a="train">Treino offline<small>Campo de tiro com alvos. Todas as armas.</small></button>
             <button class="ae-btn" data-a="profile">Perfil<small>Apelido, nível e estatísticas.</small></button>
             <button class="ae-btn" data-a="settings">Configurações</button>
-            <button class="ae-btn" disabled>Jogar online<small>Partidas contra jogadores reais (parte 3)</small></button>
+            <button class="ae-btn" data-a="online">Jogar online<small>Salas e partidas contra jogadores reais.</small></button>
           </div>
         </div>
         <div class="ae-keys">
@@ -209,7 +211,7 @@ export class Menus {
   }
 
   /** the results screen at the end of a match */
-  showResults(title: "win" | "lose" | "draw", headline: string, table: string, xp: number, level: { before: number; after: number }, sub: string): void {
+  showResults(title: "win" | "lose" | "draw", headline: string, table: string, xp: number, level: { before: number; after: number }, sub: string, online = false): void {
     const li = levelInfo(this.profile.xp);
     this.results.innerHTML = `
       <div class="ae-card">
@@ -217,7 +219,7 @@ export class Menus {
         <div class="ae-sub" style="margin:0">${esc(sub)}</div>
         <div class="ae-sb inline">${table}</div>
         <div class="ae-profilebox">+${xp} XP · ${rankName(li.level)} · nível ${li.level}${level.after > level.before ? ` <b style="color:#7dff9a">· subiu de nível!</b>` : ""}<div class="xp"><i style="width:${Math.round((li.into / li.next) * 100)}%"></i></div></div>
-        <div class="ae-two"><button class="ae-btn" data-a="quit">Menu principal</button><button class="ae-btn primary" data-a="again">Jogar de novo</button></div>
+        <div class="ae-two"><button class="ae-btn" data-a="quit">Menu principal</button><button class="ae-btn primary" data-a="again">${online ? "Voltar à sala" : "Jogar de novo"}</button></div>
       </div>`;
     this.show("results");
   }

@@ -119,4 +119,13 @@ export const CSS = `
 .ae-top .mid { min-width: 150px; white-space: nowrap; }
 .ae-banner { font-size: clamp(22px, 4.2vw, 44px); max-width: 92vw; white-space: normal; text-align: center; width: max-content; } .ae-banner small { display: block; margin-top: 8px; font-size: .4em; letter-spacing: 2px; opacity: .9; }
 .ae-sb.inline { position: static; display: block; transform: none; min-width: 0; background: transparent; border: 0; padding: 0; } .ae-dead { bottom: 14%; }
+
+.ae-err { padding: 8px 12px; background: rgba(160,30,30,.4); border-left: 3px solid #ff6a5e; font-size: 13px; }
+.ae-rooms { width: 100%; border-collapse: collapse; font-size: 13px; } .ae-rooms th { text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; opacity: .7; padding: 4px 6px; } .ae-rooms td { padding: 6px; border-top: 1px solid rgba(255,255,255,.1); }
+.ae-form { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.12); }
+.ae-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } .ae-team { background: rgba(255,255,255,.05); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.ae-team h4 { margin: 0 0 4px; letter-spacing: 2px; text-transform: uppercase; font-size: 12px; } .ae-team.t0 h4 { color: #5fa0ff; } .ae-team.t1 h4 { color: #ff6a5e; }
+.ae-team .pl { display: flex; justify-content: space-between; padding: 4px 8px; background: rgba(0,0,0,.35); font-size: 13px; } .ae-team .pl.me { outline: 1px solid var(--accent); } .ae-team .pl.empty { opacity: .4; } .ae-team .pl span { color: #7dff9a; font-size: 11px; }
+.ae-chat { display: flex; flex-direction: column; gap: 6px; } .ae-chatbox { height: 90px; overflow-y: auto; padding: 6px 8px; background: rgba(0,0,0,.4); font-size: 12px; line-height: 1.5; } .ae-chatbox i { opacity: .6; }
+.ae-chatin { display: flex; gap: 6px; } .ae-chatin input { flex: 1; background: #1d1f20; color: var(--ink); border: 1px solid #666; padding: 6px; border-radius: 4px; font: inherit; }
 `;

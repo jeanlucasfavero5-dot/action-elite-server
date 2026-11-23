@@ -51,6 +51,8 @@ export class Hud {
   private frames = 0; private fpsT = 0;
   private sbT = 0;
   private hurtT = 0;
+  /** round-trip time to the server, ms (0 = offline) */
+  ping = 0;
   private bannerT = 0;
   private seen = new Map<number, number>();
   private seenT = 0;
@@ -216,7 +218,7 @@ export class Hud {
     this.drawMinimap(m, view, dt);
 
     this.frames++; this.fpsT += dt;
-    if (this.fpsT >= 0.5) { this.fps.textContent = `${Math.round(this.frames / this.fpsT)} fps`; this.frames = 0; this.fpsT = 0; }
+    if (this.fpsT >= 0.5) { this.fps.textContent = `${Math.round(this.frames / this.fpsT)} fps${this.ping ? ` · ${Math.round(this.ping)} ms` : ""}`; this.frames = 0; this.fpsT = 0; }
   }
 
   scoreboardHtml(m: Match): string {
