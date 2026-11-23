@@ -5,12 +5,15 @@ import { Sound } from "../core/audio.ts";
 import { loadSettings, saveSettings, type Settings } from "../core/settings.ts";
 import { loadProfile, saveProfile as saveProfileData, awardMatch, type Profile } from "../core/profile.ts";
 import { buildDeposito } from "../sim/map.ts";
-import { Match, DEFAULT_CONFIG, TEAM_NAMES, type MatchConfig, type Target } from "../sim/match.ts";
+import { Match, DEFAULT_CONFIG, TEAM_NAMES, RESPAWN_TIME, type MatchConfig, type Target } from "../sim/match.ts";
 import { Bot } from "../sim/bot.ts";
 import { IDLE_INPUT, type Fighter, type FighterInput } from "../sim/fighter.ts";
 import { Stage } from "../render/stage.ts";
 import { Hud } from "../ui/hud.ts";
 import { Menus } from "../ui/menus.ts";
+import { OnlineUi } from "../ui/online.ts";
+import { OnlineSession } from "../net/online.ts";
+import type { NetClient } from "../net/client.ts";
 import { CSS } from "../ui/style.ts";
 
 const STEP = 1 / 60;
@@ -28,6 +31,9 @@ export class Game {
   readonly stage: Stage;
   readonly hud = new Hud();
   readonly menus: Menus;
+  readonly onlineUi: OnlineUi;
+  /** the online match being played, or null (offline) */
+  online: OnlineSession | null = null;
   mode: Mode = "menu";
   cfg: MatchConfig = { ...DEFAULT_CONFIG };
   private canvas: HTMLCanvasElement;
@@ -63,9 +69,16 @@ export class Game {
       startTraining: () => void this.startMatch({ ...DEFAULT_CONFIG, mode: "training", playerName: this.profile.name }),
       resume: () => void this.resume(),
       quitToMenu: () => this.quitToMenu(),
-      playAgain: () => void this.startMatch({ ...this.cfg, seed: undefined }),
+      playAgain: () => { if (this.online) this.backToRoom(); else void this.startMatch({ ...this.cfg, seed: undefined }); },
+      openOnline: () => void this.onlineUi.open(),
       settingsChanged: (s) => this.applySettings(s),
       nameChanged: (n) => { this.match.local.name = n; this.profile.name = n; this.saveProfile(); },
+      click: () => this.sound.ui(),
+    });
+    this.onlineUi = new OnlineUi({
+      playerName: () => this.profile.name,
+      onStart: (net, msg) => void this.startOnline(net, msg),
+      onBack: () => { this.menus.renderMenu(); this.menus.show("menu"); },
       click: () => this.sound.ui(),
     });
     this.match = this.makeShowcase();
@@ -214,6 +227,52 @@ export class Game {
     this.guardLock();
   }
 
+  /** the server started the match: mirror it, predict the local player and send the controls */
+  async startOnline(net: NetClient, start: Record<string, unknown>): Promise<void> {
+    this.sound.resume();
+    this.stage.clear();
+    const sess = new OnlineSession(net, start, this.map);
+    this.online = sess;
+    this.match = sess.match;
+    this.cfg = { ...sess.match.cfg };
+    this.wire(this.match, true);
+    net.onMessage = (m) => sess.handle(m);
+    sess.onLobby = (m) => this.onlineUi.onMsg(m);
+    const prev = net.onStatus;
+    net.onStatus = (st) => { prev(st); if (st === "closed" && this.online === sess) this.connectionLost(); };
+    this.lastSwap = false;
+    this.killedBy = ""; this.spectateId = -1; this.objective = 0; this.endAt = 0;
+    this.pend = null; this.acc = 0;
+    this.startedAt = performance.now();
+    this.mode = "playing";
+    this.menus.show("none");
+    this.hud.show(true);
+    this.stage.view.hidden = false;
+    this.hud.say("Partida online", "#ffe28a", 2200);
+    await this.input.lock();
+    this.guardLock();
+  }
+
+  /** the connection dropped during an online match */
+  private connectionLost(): void {
+    this.hud.say("Conexão com o servidor perdida", "#ff8a80", 3000);
+    setTimeout(() => { if (this.online) this.quitToMenu(); }, 2600);
+  }
+
+  /** after an online match: the room lobby again */
+  private backToRoom(): void {
+    const ui = this.onlineUi;
+    this.online = null;
+    ui.net.onMessage = (m) => ui.onMsg(m);
+    this.stage.clear();
+    this.match = this.makeShowcase();
+    this.wire(this.match, false);
+    this.mode = "menu";
+    this.hud.show(false);
+    this.menus.show("none");
+    ui.showRoom();
+  }
+
   private guardLock(): void { setTimeout(() => { if (this.mode === "playing" && !this.input.active) this.pauseGame(); }, 700); }
 
   private pauseGame(): void {
@@ -231,6 +290,12 @@ export class Game {
   }
 
   private quitToMenu(): void {
+    if (this.online) {
+      const ui = this.onlineUi;
+      ui.net.send({ t: "leave" });
+      this.online = null;
+      ui.net.onMessage = (m) => ui.onMsg(m);
+    }
     this.input.unlock();
     this.mode = "menu";
     this.stage.clear();
@@ -250,15 +315,61 @@ export class Game {
     const r = awardMatch(this.profile, { mode: m.cfg.mode, won, kills: me.stats.kills, deaths: me.stats.deaths, headshots: me.stats.headshots, shots: me.stats.shots, hits: me.stats.hits, seconds, objective: this.objective, difficulty: m.cfg.difficulty });
     const head = won === null ? "Empate" : won ? "Vitória" : "Derrota";
     const sub = m.cfg.mode === "bomb" ? `Missão Bomba · ${m.score[0]} x ${m.score[1]} em ${m.round} rodadas` : `Deathmatch por equipes · ${m.score[0]} x ${m.score[1]}`;
-    this.menus.showResults(won === null ? "draw" : won ? "win" : "lose", head, this.hud.scoreboardHtml(m), r.xp, { before: r.levelBefore, after: r.levelAfter }, sub);
+    this.menus.showResults(won === null ? "draw" : won ? "win" : "lose", head, this.hud.scoreboardHtml(m), r.xp, { before: r.levelBefore, after: r.levelAfter }, sub, !!this.online);
     this.hud.show(false);
   }
 
   // ---------------------------------------------------------------- loop
+  /** an online frame: predict and send the local controls, draw the others between snapshots */
+  private frameOnline(now: number, dt: number): void {
+    const sess = this.online!, m = this.match, me = sess.local;
+    if (!me) return;
+    if (this.mode === "playing" && this.input.active) {
+      const f = this.input.consume();
+      this.scoreboard = f.tab;
+      if (me.alive && m.phase !== "over") {
+        const zoomScale = me.scopeFov > 0 ? me.scopeFov / this.settings.fov : 1;
+        const k = MOUSE_RAD * this.settings.sensitivity * zoomScale;
+        me.look(f.lookDx * k, f.lookDy * k * (this.settings.invertY ? -1 : 1));
+        this.lookDx = f.lookDx; this.lookDy = f.lookDy;
+      } else if (f.firePressed && !me.alive) this.cycleSpectate();
+      const cur = toInput(f);
+      const p = this.pend;
+      this.pend = p ? { ...cur, firePressed: p.firePressed || cur.firePressed, scopePressed: p.scopePressed || cur.scopePressed, reloadPressed: p.reloadPressed || cur.reloadPressed, lastWeaponPressed: p.lastWeaponPressed || cur.lastWeaponPressed, slot: cur.slot || p.slot, wheel: cur.wheel || p.wheel } : cur;
+      this.held = cur;
+      this.acc += dt;
+      while (this.acc >= STEP) {
+        const inp = this.pend ?? { ...this.held, firePressed: false, scopePressed: false, reloadPressed: false, lastWeaponPressed: false, slot: 0, wheel: 0 };
+        sess.tick(me.alive ? inp : IDLE_INPUT);
+        this.pend = null;
+        this.acc -= STEP;
+      }
+    } else {
+      // paused: the match goes on, the player stands still
+      this.acc += dt;
+      while (this.acc >= STEP) { sess.idleTick(); this.acc -= STEP; }
+      this.scoreboard = false;
+    }
+    sess.updateRemote(dt);
+    const view = this.viewFighter;
+    this.stage.update(m, view, this.acc / STEP, dt, this.lookDx, this.lookDy);
+    this.hud.ping = this.onlineUi.net.ping;
+    this.hud.update(m, view, dt, this.settings.fov, this.canvas.clientHeight, { scoreboard: this.scoreboard, spectating: view !== me ? view : null, killedBy: this.killedBy, respawnIn: RESPAWN_TIME - (m.time - me.deadSince) });
+    if (this.endAt && now >= this.endAt) { this.endAt = 0; this.finishMatch(); }
+  }
+
   private frame(now: number): void {
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    // offline a long frame is slowed down; online it is caught up (the server's clock does not wait)
+    const dt = Math.min(this.online ? 0.2 : 0.05, (now - this.last) / 1000);
     this.last = now;
     const m = this.match, me = m.local;
+
+    if (this.online && (this.mode === "playing" || this.mode === "paused")) {
+      this.frameOnline(now, dt);
+      this.stage.draw();
+      requestAnimationFrame((t) => this.frame(t));
+      return;
+    }
 
     if (this.mode === "playing" && this.input.active) {
       const f = this.input.consume();
