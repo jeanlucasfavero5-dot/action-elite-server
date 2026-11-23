@@ -87,6 +87,10 @@ export class Fighter implements Hittable {
   sinceShot = 10;
   /** plant / defuse progress 0..1 while the player holds use */
   useProgress = 0;
+  /** the main gun slot this fighter asked for (3..6) */
+  primary = 4;
+  /** seconds to look back when this fighter shoots: lag compensation (online) */
+  rewind = 0;
 
   private cooldown = 0;
   private reloadLeft = 0;

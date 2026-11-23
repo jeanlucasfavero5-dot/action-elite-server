@@ -30,7 +30,15 @@ export interface MatchConfig {
   primary: number;
   playerName: string;
   seed?: number;
+  /** online (server): the human fighters of the room; they take the first places */
+  humans?: HumanSpec[];
+  /** online: empty places are played by bots */
+  fillBots?: boolean;
+  /** online (browser): this match only mirrors what a server says; it makes no decisions */
+  remote?: boolean;
 }
+
+export interface HumanSpec { id: number; name: string; team: number; primary: number }
 
 export const DEFAULT_CONFIG: MatchConfig = { mode: "deathmatch", teamSize: 4, difficulty: 1, killLimit: 30, timeLimit: 480, roundsToWin: 5, roundTime: 150, swapSides: true, friendlyFire: false, primary: 4, playerName: "Jogador" };
 
@@ -64,6 +72,19 @@ export class Target implements Hittable {
   get hittable(): boolean { return this.alive && this.visible; }
 }
 
+/** where a fighter was a moment ago (lag compensation): the same hitbox, at an old position */
+export class Ghost implements Hittable {
+  readonly id: number; readonly team: number;
+  readonly px: number; readonly py: number; readonly pz: number; readonly crouch: number;
+  readonly hittable: boolean;
+  readonly ref: Fighter;
+  constructor(ref: Fighter, x: number, y: number, z: number, crouch: number) {
+    this.ref = ref; this.id = ref.id; this.team = ref.team; this.px = x; this.py = y; this.pz = z; this.crouch = crouch; this.hittable = ref.hittable;
+  }
+}
+
+interface HistEntry { t: number; x: number; y: number; z: number; c: number }
+
 export interface MatchEvents extends FighterFx {
   hit(attacker: Fighter, victim: Fighter | Target, dmg: number, part: Part, killed: boolean, point: Vec3): void;
   kill(attacker: Fighter, victim: Fighter, part: Part, weapon: WeaponDef): void;
@@ -86,6 +107,8 @@ const NO_EVENTS = (): MatchEvents => ({
 });
 
 export type Phase = "freeze" | "live" | "intermission" | "over";
+/** the phases in the order the network codes them */
+export const PHASES_ORDER: readonly Phase[] = ["freeze", "live", "intermission", "over"];
 export interface Bomb { state: "none" | "planted" | "defused" | "exploded"; site: string; x: number; z: number; left: number }
 
 const BOT_NAMES = ["Falcão", "Corvo", "Lince", "Víbora", "Sombra", "Raio", "Tigre", "Lobo", "Nômade", "Trovão", "Aranha", "Cobra", "Fênix", "Pantera", "Rastro", "Miragem", "Ferrão", "Tufão", "Andorra", "Brasa"];
@@ -123,6 +146,8 @@ export class Match implements FighterWorld {
   private nextId = 2;
   private nextTargetId = 1;
   private lastBeep = 0;
+  /** positions of the last second, per fighter (online: lag compensation) */
+  private hist = new Map<number, HistEntry[]>();
 
   readonly cfg: MatchConfig;
 
@@ -132,7 +157,16 @@ export class Match implements FighterWorld {
     this.rand = cfg.seed !== undefined ? mulberry32(cfg.seed) : Math.random;
     this.nav = new Nav(map);
 
+    if (cfg.remote) return; // the network layer adds the fighters and sets the state
+    if (cfg.humans) {
+      for (const h of cfg.humans) { const f = new Fighter(h.id, h.name, h.team, false, this); f.primary = h.primary; this.fighters.push(f); }
+      this.nextId = Math.max(1, ...cfg.humans.map((h) => h.id)) + 1;
+      if (cfg.fillBots) this.fillBots();
+      this.begin();
+      return;
+    }
     const player = new Fighter(1, cfg.playerName, 0, false, this);
+    player.primary = cfg.primary;
     this.fighters.push(player);
     if (cfg.mode === "training") {
       const kinds: TargetKind[] = ["static", "static", "static", "static", "strafe", "strafe", "strafe", "strafe", "popup", "popup"];
@@ -141,25 +175,44 @@ export class Match implements FighterWorld {
       this.clock = 0;
       return;
     }
-    const names = [...BOT_NAMES];
+    this.fillBots();
+    this.begin();
+  }
+
+  /** bots for every empty place of both teams */
+  private fillBots(): void {
+    const names = BOT_NAMES.filter((n) => !this.fighters.some((f) => f.name === n));
     for (let t = 0; t < 2; t++) {
-      const count = cfg.teamSize - (t === 0 ? 1 : 0);
-      for (let i = 0; i < count; i++) {
+      const have = this.fighters.filter((f) => f.team === t).length;
+      for (let i = have; i < this.cfg.teamSize; i++) {
         const name = names.splice(Math.floor(this.rand() * names.length), 1)[0] ?? `Bot${this.nextId}`;
         const f = new Fighter(this.nextId++, name, t, true, this);
         this.fighters.push(f);
-        this.bots.set(f.id, new Bot(f, this, cfg.difficulty));
+        this.bots.set(f.id, new Bot(f, this, this.cfg.difficulty));
       }
     }
-    if (cfg.mode === "deathmatch") {
-      this.clock = cfg.timeLimit;
+  }
+
+  /** starts the first round / the clock */
+  private begin(): void {
+    if (this.cfg.mode === "deathmatch") {
+      this.clock = this.cfg.timeLimit;
       this.phase = "live";
       for (const f of this.fighters) this.spawnFighter(f);
     } else this.startRound();
   }
 
+  /** a human left: a bot takes the place */
+  convertToBot(id: number): void {
+    const f = this.fighter(id);
+    if (!f || f.isBot) return;
+    f.isBot = true;
+    this.inputs.delete(id);
+    this.bots.set(id, new Bot(f, this, this.cfg.difficulty));
+  }
+
   // ---------------------------------------------------------------- queries
-  get local(): Fighter { return this.fighters[0]; }
+  get local(): Fighter { return this.fighter(this.localId) ?? this.fighters[0]; }
   rng(): number { return this.rand(); }
   fighter(id: number): Fighter | undefined { return this.fighters.find((f) => f.id === id); }
   isAttacker(team: number): boolean { return (team === 0) !== this.swapped; }
@@ -183,12 +236,42 @@ export class Match implements FighterWorld {
     scope: (f, level) => this.ev.scope(f, level),
   };
   victims(shooter: Fighter): Hittable[] {
-    const out: Hittable[] = this.fighters.filter((o) => o !== shooter && o.alive && (this.cfg.friendlyFire || o.team !== shooter.team));
+    const out: Hittable[] = [];
+    for (const o of this.fighters) {
+      if (o === shooter || !o.alive || (!this.cfg.friendlyFire && o.team === shooter.team)) continue;
+      out.push(shooter.rewind > 0 ? this.ghostOf(o, shooter.rewind) : o);
+    }
     for (const t of this.targets) out.push(t);
     return out;
   }
 
+  private recordHistory(): void {
+    for (const f of this.fighters) {
+      if (!f.alive) { this.hist.delete(f.id); continue; }
+      let h = this.hist.get(f.id);
+      if (!h) { h = []; this.hist.set(f.id, h); }
+      h.push({ t: this.time, x: f.body.x, y: f.body.y, z: f.body.z, c: f.body.crouch });
+      while (h.length && h[0].t < this.time - 1.1) h.shift();
+    }
+  }
+
+  /** the fighter as it was `secs` seconds ago */
+  private ghostOf(f: Fighter, secs: number): Hittable {
+    const h = this.hist.get(f.id);
+    const at = this.time - secs;
+    if (!h || h.length < 2 || at <= h[0].t) return h && h.length && at < h[0].t ? new Ghost(f, h[0].x, h[0].y, h[0].z, h[0].c) : f;
+    for (let i = h.length - 1; i > 0; i--) {
+      if (h[i - 1].t <= at) {
+        const a = h[i - 1], b = h[i], k = b.t > a.t ? (at - a.t) / (b.t - a.t) : 1;
+        return new Ghost(f, a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.z + (b.z - a.z) * k, a.c + (b.c - a.c) * k);
+      }
+    }
+    return f;
+  }
+
   damage(shooter: Fighter, victim: Hittable, dmg: number, part: Part, point: Vec3, weapon: WeaponDef): boolean {
+    if (this.cfg.remote) return false; // a mirror of a server: it decides nothing
+    if (victim instanceof Ghost) victim = victim.ref;
     if (victim instanceof Target) {
       if (!victim.alive || !victim.visible) return false;
       victim.hp -= dmg; victim.sinceHit = 0; shooter.stats.damage += dmg;
@@ -243,7 +326,7 @@ export class Match implements FighterWorld {
 
   private primaryFor(f: Fighter): number | null {
     if (this.cfg.mode === "training") return null;
-    if (!f.isBot) return this.cfg.primary;
+    if (!f.isBot) return f.primary;
     const r = this.rand(), hard = this.cfg.difficulty;
     if (r < 0.4) return 4;
     if (r < 0.7) return 3;
@@ -358,6 +441,7 @@ export class Match implements FighterWorld {
       f.tick(dt, input, !frozen && !busy);
     }
 
+    if (this.cfg.humans) this.recordHistory();
     if (this.cfg.mode === "training") this.updateTargets(dt);
     else if (this.cfg.mode === "deathmatch") {
       if (this.phase === "live") {
